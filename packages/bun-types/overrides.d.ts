@@ -110,8 +110,20 @@ declare global {
       on(event: "memoryPressure", listener: (level: "warning" | "critical") => void): this;
       once(event: "memoryPressure", listener: (level: "warning" | "critical") => void): this;
       off(event: "memoryPressure", listener: (level: "warning" | "critical") => void): this;
+      /**
+       * `NodeJS.Process` inherits `off` from `EventEmitter` rather than
+       * declaring its own overloads (unlike `on`, `once`, `addListener` and
+       * the `prepend*` pair, which it does declare). Adding an own `off`
+       * above therefore *shadows* the inherited signature outright instead of
+       * merging with it, leaving `"memoryPressure"` as the only accepted
+       * event and breaking every other `process.off(...)` call. Restating the
+       * inherited catch-all keeps the overload set complete.
+       */
+      off(event: string | symbol, listener: (...args: any[]) => void): this;
       addListener(event: "memoryPressure", listener: (level: "warning" | "critical") => void): this;
       removeListener(event: "memoryPressure", listener: (level: "warning" | "critical") => void): this;
+      /** Same shadowing hazard as `off` above. */
+      removeListener(event: string | symbol, listener: (...args: any[]) => void): this;
       prependListener(event: "memoryPressure", listener: (level: "warning" | "critical") => void): this;
       prependOnceListener(event: "memoryPressure", listener: (level: "warning" | "critical") => void): this;
       emit(event: "memoryPressure", level: "warning" | "critical"): boolean;
