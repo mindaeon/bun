@@ -1929,11 +1929,6 @@ impl BlobExt for Blob {
             return Ok(unsafe { BlobExt::to_js(&*ptr, global_this) });
         }
 
-        // If the optional start parameter is not used as a parameter, let relativeStart be 0.
-        let mut relative_start: i64 = 0;
-        // If the optional end parameter is not used, let relativeEnd be size.
-        let mut relative_end: i64 = i64::try_from(self.size.get()).expect("int cast");
-
         // Mutate the fixed-3 args array in place to shift the string arg into [2].
         if args[0].is_string() {
             args[2] = args[0];
@@ -1945,30 +1940,49 @@ impl BlobExt for Blob {
         }
 
         let mut args_iter = jsc::ArgumentsSlice::init(global_this.bun_vm(), &arguments_[..3]);
-        if let Some(start_) = args_iter.next_eat() {
-            if start_.is_number() {
-                let start = start_.to_int64();
-                if start < 0 {
-                    relative_start = (start
-                        .wrapping_add(i64::try_from(self.size.get()).expect("int cast")))
-                    .max(0);
-                } else {
-                    relative_start = start.min(i64::try_from(self.size.get()).expect("int cast"));
-                }
-            }
+        // Eat both numeric arguments before resolving, so argument order (and the
+        // content-type argument that follows) is unchanged.
+        let start_arg = args_iter
+            .next_eat()
+            .filter(|value| value.is_number())
+            .map(|value| value.to_int64());
+        let end_arg = args_iter
+            .next_eat()
+            .filter(|value| value.is_number())
+            .map(|value| value.to_int64());
+
+        // A negative index counts back from the end, so it is only meaningful against a known
+        // length. A file-backed blob starts out unresolved -- `size` is MAX_SIZE until a stat
+        // resolves it -- so measuring against it here put `Bun.file(p).slice(-5)` at an offset near
+        // 2^52. The read path then fails to lseek there, deliberately ignores the failure so pipes
+        // keep working, and reads from position 0, silently handing back the *first* five bytes
+        // instead of the last five. Resolve first, and only when a negative index actually needs
+        // it: a positive-index slice keeps its unresolved size, which stream readers and the
+        // structured-clone wire format both depend on.
+        if start_arg.is_some_and(|value| value < 0) || end_arg.is_some_and(|value| value < 0) {
+            self.resolve_size();
         }
 
-        if let Some(end_) = args_iter.next_eat() {
-            if end_.is_number() {
-                let end = end_.to_int64();
-                if end < 0 {
-                    relative_end = (end
-                        .wrapping_add(i64::try_from(self.size.get()).expect("int cast")))
-                    .max(0);
-                } else {
-                    relative_end = end.min(i64::try_from(self.size.get()).expect("int cast"));
-                }
-            }
+        let size = i64::try_from(self.size.get()).expect("int cast");
+        // If the optional start parameter is not used as a parameter, let relativeStart be 0.
+        let mut relative_start: i64 = 0;
+        // If the optional end parameter is not used, let relativeEnd be size.
+        let mut relative_end: i64 = size;
+
+        if let Some(start) = start_arg {
+            relative_start = if start < 0 {
+                start.wrapping_add(size).max(0)
+            } else {
+                start.min(size)
+            };
+        }
+
+        if let Some(end) = end_arg {
+            relative_end = if end < 0 {
+                end.wrapping_add(size).max(0)
+            } else {
+                end.min(size)
+            };
         }
 
         let mut content_type = BlobContentType::default();

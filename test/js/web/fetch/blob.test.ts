@@ -825,3 +825,42 @@ test.each([
   const blob = new Blob(["abc"], { type });
   expect(blob.slice(0, 1).type).toBe(expected);
 });
+
+// A negative index counts back from the end, so interpreting one requires the blob's length.
+// A `Bun.file()` blob does not know its length until something stats it, and the unresolved
+// sentinel (MAX_SIZE) was what the negative index got measured against -- which put the read at
+// an offset near 2^52, where the lseek quietly failed (the read path ignores seek errors so pipes
+// keep working) and the read fell back to position 0. The caller silently got the FIRST n bytes
+// instead of the last n, and only when nothing had resolved the size first.
+//
+// The existing coverage above missed this because every negative-index case there runs on
+// `blob.slice(1, 4).slice(...)`, whose outer slice already carries an explicit finite size.
+describe("Bun.file().slice() with a negative index", () => {
+  const fixture = path.join(import.meta.dir, "fixtures", "slice.txt"); // "BunFoo"
+  const cases = [[-3], [-6], [-100], [0, -3], [-5, -3], [2, -2]] as const;
+
+  test("counts back from the end when the size was never resolved", async () => {
+    // Every case takes a FRESH Bun.file(): reading .size first resolves the length and hides it.
+    expect(await Bun.file(fixture).slice(-3).text()).toBe("Foo");
+    expect(await Bun.file(fixture).slice(-6).text()).toBe("BunFoo");
+    expect(await Bun.file(fixture).slice(-100).text()).toBe("BunFoo");
+    expect(await Bun.file(fixture).slice(0, -3).text()).toBe("Bun");
+    expect(await Bun.file(fixture).slice(-5, -3).text()).toBe("un");
+    expect(await Bun.file(fixture).slice(2, -2).text()).toBe("nF");
+  });
+
+  test("agrees with the equivalent in-memory Blob", async () => {
+    const memory = new Blob(["BunFoo"]);
+    for (const args of cases) {
+      expect(await Bun.file(fixture).slice(...args).text()).toBe(await memory.slice(...args).text());
+    }
+  });
+
+  test("agrees with itself whether or not the size was resolved first", async () => {
+    for (const args of cases) {
+      const resolved = Bun.file(fixture);
+      expect(resolved.size).toBe(6);
+      expect(await resolved.slice(...args).text()).toBe(await Bun.file(fixture).slice(...args).text());
+    }
+  });
+});
